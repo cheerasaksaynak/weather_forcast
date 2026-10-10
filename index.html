@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>พยากรณ์อากาศรายชั่วโมง</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+    body { font-family: sans-serif; max-width: 900px; margin: 0 auto; padding: 16px; }
+    #keyRow { display: flex; gap: 8px; justify-content: center; margin-bottom: 8px; }
+    #keyRow input { padding: 6px; width: 320px; max-width: 100%; }
+    #map { height: 350px; border-radius: 8px; border: 1px solid #ccc; }
+    #coords { text-align: center; margin: 8px 0; color: #555; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    th, td { border: 1px solid #ccc; padding: 6px; text-align: center; }
+    th { background: #e8f0fe; }
+    .icon { font-size: 1.6em; display: block; }
+    #status { text-align: center; margin-top: 12px; }
+    .error { color: red; }
+</style>
+</head>
+<body>
+
+<h1 style="color: blue;text-align: center;">🌤️ พยากรณ์อากาศรายชั่วโมง</h1>
+
+<div id="keyRow">
+    <input id="key" type="password" placeholder="🔑 ใส่ Google API Key">
+</div>
+
+<div id="map"></div>
+<div id="coords">👆 คลิกบนแผนที่เพื่อเลือกตำแหน่ง</div>
+
+<div id="status"></div>
+<table id="result" hidden>
+    <thead>
+        <tr>
+            <th>🕐 เวลา</th>
+            <th>☁️ สภาพอากาศ</th>
+            <th>🌡️ อุณหภูมิ</th>
+            <th>☔ โอกาสฝน</th>
+            <th>💧 ความชื้น</th>
+            <th>💨 ลม</th>
+        </tr>
+    </thead>
+    <tbody></tbody>
+</table>
+
+<script>
+    const API_URL = 'https://weather.googleapis.com/v1/forecast/hours:lookup';
+    const keyInput = document.getElementById('key');
+    const coordsEl = document.getElementById('coords');
+    const statusEl = document.getElementById('status');
+    const table = document.getElementById('result');
+    const tbody = table.querySelector('tbody');
+
+    keyInput.value = localStorage.getItem('weatherApiKey') || '';
+    keyInput.addEventListener('change', () => localStorage.setItem('weatherApiKey', keyInput.value.trim()));
+
+    const map = L.map('map').setView([13.7563, 100.5018], 8);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    let marker = null;
+    map.on('click', (e) => {
+        const lat = e.latlng.lat;
+        const lng = e.latlng.lng;
+        if (marker) marker.setLatLng(e.latlng); else marker = L.marker(e.latlng).addTo(map);
+        coordsEl.textContent = '📍 ละติจูด ' + lat.toFixed(5) + ', ลองจิจูด ' + lng.toFixed(5);
+        loadForecast(lat, lng);
+    });
+
+    function setStatus(text, isError) {
+        statusEl.textContent = text;
+        statusEl.className = isError ? 'error' : '';
+    }
+
+    function conditionIcon(type, isDay) {
+        const t = String(type || '');
+        if (/THUNDER/.test(t)) return '⛈️';
+        if (/SNOW|BLIZZARD|HAIL|SLEET|FREEZING/.test(t)) return '❄️';
+        if (/RAIN|SHOWERS|DRIZZLE/.test(t)) return '🌧️';
+        if (/WIND/.test(t)) return '💨';
+        if (/FOG|HAZE|SMOKE|DUST/.test(t)) return '🌫️';
+        if (t === 'CLEAR') return isDay === false ? '🌙' : '☀️';
+        if (t === 'MOSTLY_CLEAR' || t === 'PARTLY_CLOUDY') return isDay === false ? '☁️' : '⛅';
+        if (/CLOUD/.test(t)) return '☁️';
+        return '🌡️';
+    }
+
+    function addRow(h) {
+        const tr = tbody.insertRow();
+        const d = h.displayDateTime;
+        const time = d
+            ? String(d.hours || 0).padStart(2, '0') + ':00 (' + d.day + '/' + d.month + ')'
+            : new Date(h.interval.startTime).toLocaleString('th-TH');
+
+        const cond = h.weatherCondition || {};
+        const desc = cond.description ? cond.description.text : '-';
+        const temp = h.temperature ? Math.round(h.temperature.degrees) + '°' + (h.temperature.unit === 'FAHRENHEIT' ? 'F' : 'C') : '-';
+        const rain = h.precipitation && h.precipitation.probability ? h.precipitation.probability.percent + '%' : '-';
+        const humidity = h.relativeHumidity != null ? h.relativeHumidity + '%' : '-';
+        const wind = h.wind && h.wind.speed ? Math.round(h.wind.speed.value) + ' กม./ชม.' : '-';
+
+        tr.insertCell().textContent = time;
+        const c = tr.insertCell();
+        const icon = document.createElement('span');
+        icon.className = 'icon';
+        icon.textContent = conditionIcon(cond.type, h.isDaytime);
+        c.append(icon, desc);
+        [temp, rain, humidity, wind].forEach(v => { tr.insertCell().textContent = v; });
+    }
+
+    async function loadForecast(lat, lng) {
+        const key = keyInput.value.trim();
+        if (!key) { setStatus('กรุณาใส่ API Key ก่อน', true); return; }
+        localStorage.setItem('weatherApiKey', key);
+
+        const params = new URLSearchParams({
+            key: key,
+            'location.latitude': lat,
+            'location.longitude': lng,
+            languageCode: 'th'
+        });
+
+        table.hidden = true;
+        tbody.innerHTML = '';
+        setStatus('⏳ กำลังโหลด...');
+
+        try {
+            const res = await fetch(API_URL + '?' + params);
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error ? data.error.message : 'HTTP ' + res.status);
+
+            const hours = data.forecastHours || [];
+            if (!hours.length) { setStatus('ไม่พบข้อมูลสำหรับตำแหน่งนี้', true); return; }
+            hours.forEach(addRow);
+            table.hidden = false;
+            setStatus('');
+        } catch (err) {
+            setStatus('❌ เกิดข้อผิดพลาด: ' + err.message, true);
+        }
+    }
+</script>
+</body>
+</html>
